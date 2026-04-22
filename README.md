@@ -2,6 +2,8 @@
 
 **Bachelorarbeit · Wirtschaftsuniversität Wien · Lukas Kressl**
 
+**Live Demo:** https://bachelor-momentum-contrarian-gkqc677jz6fmyw53d6rypy.streamlit.app/
+
 Empirischer Vergleich zyklischer und antizyklischer Anlagestrategien im Gold-Aktien-Portfolio (SPY + GLD, 2005–2025). Interaktives Streamlit-Dashboard mit Parameter-Sliding, Sensitivitätsanalysen, Regime-Auswertung und automatisierter Selbstvalidierung.
 
 ---
