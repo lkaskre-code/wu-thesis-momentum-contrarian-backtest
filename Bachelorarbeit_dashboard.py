@@ -2700,7 +2700,7 @@ def main():
     # ── KI-ANALYSE EXPORT ─────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("Analyse Export")
-    st.caption("Alle Backtestdaten als strukturierter Text — direkt in Claude / ChatGPT einfügen")
+    st.caption("Alle Backtestdaten als strukturierter Text")
 
     if st.button("Bericht generieren", type="primary"):
 
