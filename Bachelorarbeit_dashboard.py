@@ -1,7 +1,7 @@
 # =============================================================================
 #  INTERAKTIVES BACKTESTING-DASHBOARD
 #  Momentum vs. Contrarian · SPY + GLD · 2005–2025
-#  Bachelorarbeit · Lukas Kressl
+#  Bachelorarbeit · Lukas Kaska
 #
 #  Starten:  streamlit run Bachelorarbeit_dashboard.py
 # =============================================================================
@@ -1178,16 +1178,13 @@ def _block_bootstrap_cached(cache_key, _r_bm, _r_a, _r_b,
 
 
 def plot_bootstrap_maxdd_mpl(bs: dict, save_path: str | None = None):
-    """Überlagerte KDE-Plots der Bootstrap-Max-Drawdown-Verteilungen (matplotlib).
+    """Überlagerte KDE-Plots der Bootstrap-Max-Drawdown-Verteilungen (Plotly).
 
     Gestrichelte Linien markieren die 5%- / 95%-Konfidenzintervall-Grenzen.
-    Gibt eine matplotlib Figure zurück; speichert optional als PNG (save_path).
+    Gibt eine Plotly Figure zurück; speichert optional als PNG (save_path, erfordert kaleido).
     """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(10, 5))
+    import plotly.graph_objects as go
+    from scipy.stats import gaussian_kde as _gkde
 
     entries = [
         ("Benchmark",  bs["mdd_bm"] * 100,
@@ -1198,30 +1195,56 @@ def plot_bootstrap_maxdd_mpl(bs: dict, save_path: str | None = None):
          (bs["ci_mdd_b"][0]  * 100, bs["ci_mdd_b"][1]  * 100), "#d62728"),
     ]
 
-    from scipy.stats import gaussian_kde as _gkde
+    fig = go.Figure()
+
     for name, arr, (lo, hi), color in entries:
         kde = _gkde(arr, bw_method="scott")
         xs  = np.linspace(arr.min() - 0.5, arr.max() + 0.5, 600)
         ys  = kde(xs)
-        ax.plot(xs, ys, color=color, lw=2, label=name)
-        ax.fill_between(xs, ys, alpha=0.12, color=color)
-        ax.axvline(lo, color=color, lw=1.2, ls="--", alpha=0.85)
-        ax.axvline(hi, color=color, lw=1.2, ls="--", alpha=0.85)
 
-    ax.set_xlabel("Max Drawdown (%)", fontsize=12)
-    ax.set_ylabel("Dichte", fontsize=12)
-    ax.set_title(
-        f"Bootstrap-Verteilung Max Drawdown  "
-        f"({bs['n_iter']:,} Iterationen · Blockgröße {bs['block_size']} HT)\n"
-        "Gestrichelt: 5%- / 95%-Konfidenzintervall",
-        fontsize=12,
+        # filled area
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([xs, xs[::-1]]),
+            y=np.concatenate([ys, np.zeros(len(ys))]),
+            fill="toself",
+            fillcolor=color,
+            opacity=0.12,
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        # KDE line
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys,
+            mode="lines",
+            line=dict(color=color, width=2),
+            name=name,
+        ))
+        # CI verticals
+        for xv in (lo, hi):
+            fig.add_vline(
+                x=xv, line=dict(color=color, width=1.2, dash="dash"),
+                opacity=0.85,
+            )
+
+    fig.update_layout(
+        title=(
+            f"Bootstrap-Verteilung Max Drawdown  "
+            f"({bs['n_iter']:,} Iterationen · Blockgröße {bs['block_size']} HT)<br>"
+            "<sup>Gestrichelt: 5%- / 95%-Konfidenzintervall</sup>"
+        ),
+        xaxis_title="Max Drawdown (%)",
+        yaxis_title="Dichte",
+        legend=dict(font=dict(size=11)),
+        height=450,
+        template="plotly_white",
     )
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        try:
+            fig.write_image(save_path, scale=2)
+        except Exception:
+            pass  # kaleido nicht verfügbar → PNG-Export überspringen
 
     return fig
 
@@ -3025,8 +3048,7 @@ def main():
                 "bootstrap_maxdd.png",
             )
             _fig_bs = plot_bootstrap_maxdd_mpl(_bs, save_path=_png_path)
-            st.pyplot(_fig_bs)
-            st.caption(f"Plot gespeichert: {_png_path}")
+            st.plotly_chart(_fig_bs, use_container_width=True)
 
     # ── ALLOKATION ────────────────────────────────────────────────────────────
     with st.expander("Allokationshistorie", expanded=False):
