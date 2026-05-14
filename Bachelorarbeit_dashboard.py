@@ -3,7 +3,7 @@
 #  Momentum vs. Contrarian · SPY + GLD · 2005–2025
 #  Bachelorarbeit · Lukas Kressl
 #
-#  Starten:  python -m streamlit run Bachelorarbeit_dashboard.py
+#  Starten:  streamlit run Bachelorarbeit_dashboard.py
 # =============================================================================
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
@@ -813,7 +813,8 @@ class BacktestReportAnalyzer:
     def to_markdown(self, params: dict,
                     filter_s=None, crash_thr: float = -3.0,
                     sensitivity_dfs: dict = None,
-                    monthly_df=None) -> str:
+                    monthly_df=None,
+                    stats_dict: dict | None = None) -> str:
         """Generiert den vollständigen Markdown-Bericht.
 
         Parameters
@@ -841,6 +842,62 @@ class BacktestReportAnalyzer:
         L += ["## 2. Performance-Metriken (annualisiert, 2005–2025)", ""]
         L += self._df_to_md(self.performance_df(), index=True)
         L.append("")
+
+        # ── §7 Statistische Signifikanz (optional) ───────────────────────────
+        if stats_dict:
+            L += ["## 7. Statistische Signifikanz (Ledoit-Wolf HAC)", ""]
+            L += [
+                "**H₀: SR(Strategie) = SR(Benchmark)  ·  zweiseitig  "
+                "·  Newey-West HAC-Varianz**", "",
+                "| Test                     | SR Strat. | SR Bench. "
+                "| t-Statistik | p-Wert | α=5% | α=10% |",
+                "|--------------------------|-----------|-----------|"
+                "-------------|--------|------|-------|",
+            ]
+            _p_m = stats_dict.get("p_Mom_vs_BM", float("nan"))
+            _p_c = stats_dict.get("p_Con_vs_BM", float("nan"))
+            _t_m = stats_dict.get("t_Mom_vs_BM", float("nan"))
+            _t_c = stats_dict.get("t_Con_vs_BM", float("nan"))
+            _sr_m = stats_dict.get("SR_Momentum",   float("nan"))
+            _sr_c = stats_dict.get("SR_Contrarian", float("nan"))
+            _sr_b = stats_dict.get("SR_Benchmark",  float("nan"))
+            L += [
+                f"| Momentum vs. Benchmark   | {_sr_m:.3f}      | {_sr_b:.3f}      "
+                f"| {_t_m:+.3f}       | {_p_m:.4f} | "
+                f"{'✓' if _p_m < 0.05 else '–'}    | "
+                f"{'✓' if _p_m < 0.10 else '–'}     |",
+                f"| Contrarian vs. Benchmark | {_sr_c:.3f}      | {_sr_b:.3f}      "
+                f"| {_t_c:+.3f}       | {_p_c:.4f} | "
+                f"{'✓' if _p_c < 0.05 else '–'}    | "
+                f"{'✓' if _p_c < 0.10 else '–'}     |",
+            ]
+            L.append(
+                f"\n*Lags: {stats_dict.get('n_lags', '—')}  ·  "
+                f"T: {stats_dict.get('T', 0):,} Handelstage  ·  "
+                "Referenz: Ledoit & Wolf (2008), J. Empirical Finance*"
+            )
+            # Bootstrap-CIs (falls vorhanden)
+            if "ci_cagr_bm" in stats_dict:
+                L += [
+                    "", "**Bootstrap 5%/95%-Konfidenzintervalle "
+                    f"({stats_dict.get('bs_n_iter', 10000):,} Iterationen "
+                    f"· Block {stats_dict.get('bs_block', 63)} HT)**", "",
+                    "| Strategie  | CAGR  5% | CAGR 95% | MaxDD  5% | MaxDD 95% |",
+                    "|------------|----------|----------|-----------|-----------|",
+                    f"| Benchmark  | {stats_dict['ci_cagr_bm'][0]*100:.2f} %  "
+                    f"| {stats_dict['ci_cagr_bm'][1]*100:.2f} %  "
+                    f"| {stats_dict['ci_mdd_bm'][0]*100:.1f} %   "
+                    f"| {stats_dict['ci_mdd_bm'][1]*100:.1f} %   |",
+                    f"| Momentum   | {stats_dict['ci_cagr_a'][0]*100:.2f} %  "
+                    f"| {stats_dict['ci_cagr_a'][1]*100:.2f} %  "
+                    f"| {stats_dict['ci_mdd_a'][0]*100:.1f} %   "
+                    f"| {stats_dict['ci_mdd_a'][1]*100:.1f} %   |",
+                    f"| Contrarian | {stats_dict['ci_cagr_b'][0]*100:.2f} %  "
+                    f"| {stats_dict['ci_cagr_b'][1]*100:.2f} %  "
+                    f"| {stats_dict['ci_mdd_b'][0]*100:.1f} %   "
+                    f"| {stats_dict['ci_mdd_b'][1]*100:.1f} %   |",
+                ]
+            L.append("")
 
         # ── §3 Regime-Analyse ────────────────────────────────────────────────
         L += ["## 3. Regime-Analyse", ""]
@@ -906,6 +963,267 @@ class BacktestReportAnalyzer:
             L += self._df_to_md(monthly_df.reset_index(), index=False)
 
         return "\n".join(L)
+
+
+# =============================================================================
+# §7c  STATISTISCHE SIGNIFIKANZ & ROBUSTHEIT  ★ WICHTIG FÜR BACHELORARBEIT
+# =============================================================================
+# Zwei Module:
+#
+#   sharpe_significance_lw()       Ledoit-Wolf (2008) HAC-korrigierter Sharpe-Test
+#   block_bootstrap()              Circular Block Bootstrap (CAGR & Max DD)
+#   _block_bootstrap_cached()      @st.cache_data-Wrapper für Dashboard
+#   plot_bootstrap_maxdd_mpl()     Matplotlib KDE-Plot → bootstrap_maxdd.png
+#
+# METHODIK:
+#   Sharpe-Test: Delta-Methode + Newey-West HAC-Varianzschätzung.
+#       H₀: SR(Strategie) = SR(Benchmark) — zweiseitiger asymptotischer z-Test.
+#       Berücksichtigt Autokorrelation, Heteroskedastizität und Kreuzkorrelation.
+#       Referenz: Ledoit & Wolf (2008), J. Empirical Finance 15(4), 850–859.
+#
+#   Block Bootstrap: Circular Block Bootstrap nach Politis & Romano (1992).
+#       Blockgröße 63 HT (≈ 1 Quartal) erhält kurzfristige Autokorrelation.
+#       Konfidenzintervalle: empirische 5%- / 95%-Quantile aus 10 000 Pfaden.
+#       Speicheroptimiert: Verarbeitung in Chunks von 1 000 Pfaden.
+# =============================================================================
+
+
+def sharpe_significance_lw(
+    r_a: pd.Series,
+    r_b: pd.Series,
+    r_bm: pd.Series,
+    n_lags: int | None = None,
+) -> dict:
+    """Ledoit-Wolf (2008) HAC-korrigierter Sharpe-Ratio-Signifikanztest.
+
+    Testet H₀: SR(r_a) = SR(r_bm) und H₀: SR(r_b) = SR(r_bm) unabhängig.
+
+    Implementierung (Ledoit & Wolf 2008, Gleichungen 9–12):
+      1. Parametervektor theta = (mu_s, sigma2_s, mu_b, sigma2_b)
+      2. Momentbedingungen: g_t(theta) = (r_s - mu_s,
+                                          (r_s - mu_s)^2 - sigma2_s,
+                                          r_b - mu_b,
+                                          (r_b - mu_b)^2 - sigma2_b)
+      3. Gradient R = delta(SR_s - SR_b) / delta(theta)  [Delta-Methode]
+      4. Newey-West HAC-Kovarianzmatrix S (Andrews-Lag-Formel)
+      5. z = sqrt(T) * Delta_SR / sqrt(R' S R),  p aus N(0,1)
+
+    Parameter
+    ---------
+    r_a, r_b, r_bm : pd.Series  Tägliche Portfoliorenditen (dezimal, kein NaN)
+    n_lags         : int | None  Newey-West Lags; None → Andrews-Formel
+
+    Rückgabe
+    --------
+    dict mit annualisierten SR-Werten, t-Statistiken, p-Werten und Metadaten
+    """
+    from scipy.stats import norm
+
+    idx = r_a.index.intersection(r_b.index).intersection(r_bm.index)
+    ra  = r_a.reindex(idx).values
+    rb  = r_b.reindex(idx).values
+    rm  = r_bm.reindex(idx).values
+    T   = len(ra)
+
+    if n_lags is None:
+        n_lags = max(1, int(np.floor(4.0 * (T / 100.0) ** (2.0 / 9.0))))
+
+    def _hac_test(r_s: np.ndarray, r_bx: np.ndarray) -> tuple[float, float]:
+        """Gibt (t_stat, p_value) für H₀: SR(r_s) = SR(r_bx)."""
+        mu_s  = r_s.mean()
+        mu_b  = r_bx.mean()
+        sig_s = r_s.std(ddof=1)
+        sig_b = r_bx.std(ddof=1)
+        if sig_s <= 0 or sig_b <= 0:
+            return np.nan, np.nan
+
+        sr_diff = mu_s / sig_s - mu_b / sig_b   # nicht annualisiert (hebt sich heraus)
+
+        # Gradient der SR-Differenz bzgl. theta = [mu_s, sigma2_s, mu_b, sigma2_b]
+        #   d(mu_s/sig_s) / d(mu_s)   = 1/sig_s
+        #   d(mu_s/sig_s) / d(sig2_s) = -mu_s / (2*sig_s^3)
+        #   d(-mu_b/sig_b)/ d(mu_b)   = -1/sig_b
+        #   d(-mu_b/sig_b)/ d(sig2_b) = mu_b / (2*sig_b^3)
+        R = np.array([
+            1.0 / sig_s,
+            -mu_s / (2.0 * sig_s ** 3),
+            -1.0 / sig_b,
+            mu_b / (2.0 * sig_b ** 3),
+        ])
+
+        # Moment-Residuen g_t(theta_hat)
+        e_s = r_s  - mu_s
+        e_b = r_bx - mu_b
+        G   = np.column_stack([e_s, e_s**2 - sig_s**2, e_b, e_b**2 - sig_b**2])
+
+        # Newey-West HAC-Kovarianzmatrix
+        S = G.T @ G / T
+        for lag in range(1, n_lags + 1):
+            w     = 1.0 - lag / (n_lags + 1)
+            gamma = G[lag:].T @ G[:-lag] / T
+            S    += w * (gamma + gamma.T)
+
+        avar = float(R @ S @ R)
+        if avar <= 0:
+            return np.nan, np.nan
+
+        t_stat = sr_diff * np.sqrt(T) / np.sqrt(avar)
+        p_val  = 2.0 * (1.0 - norm.cdf(abs(t_stat)))
+        return float(t_stat), float(p_val)
+
+    t_a, p_a = _hac_test(ra, rm)
+    t_b, p_b = _hac_test(rb, rm)
+
+    def _ann_sr(r):
+        mu, sig = r.mean(), r.std(ddof=1)
+        return float(mu / sig * np.sqrt(252)) if sig > 0 else np.nan
+
+    return {
+        "SR_Benchmark":  _ann_sr(rm),
+        "SR_Momentum":   _ann_sr(ra),
+        "SR_Contrarian": _ann_sr(rb),
+        "t_Mom_vs_BM":   t_a,
+        "p_Mom_vs_BM":   p_a,
+        "t_Con_vs_BM":   t_b,
+        "p_Con_vs_BM":   p_b,
+        "n_lags":        n_lags,
+        "T":             T,
+    }
+
+
+def block_bootstrap(
+    r_bm: pd.Series,
+    r_a:  pd.Series,
+    r_b:  pd.Series,
+    n_iter:     int = 10_000,
+    block_size: int = 63,
+    seed:       int = 42,
+    chunk_size: int = 1_000,
+) -> dict:
+    """Circular Block Bootstrap für drei Portfolios (CAGR & Max Drawdown).
+
+    Berechnet n_iter simulierte Rendite-Pfade durch zirkuläre Block-Resampling
+    und ermittelt CAGR und Max Drawdown je Pfad und Portfolio.
+
+    Parameter
+    ---------
+    r_bm, r_a, r_b : pd.Series  Tägliche Netto-Renditen (gemeinsamer Index)
+    n_iter          : int        Bootstrap-Iterationen (Standard: 10 000)
+    block_size      : int        Blockgröße in Handelstagen (Standard: 63)
+    seed            : int        Zufallsseed für Reproduzierbarkeit
+    chunk_size      : int        Pfade pro Verarbeitungs-Chunk (Speicherlimit)
+
+    Rückgabe
+    --------
+    dict mit CAGR/MaxDD-Arrays, 5%/95%-Konfidenzintervallen und Metadaten
+    """
+    idx = r_bm.index.intersection(r_a.index).intersection(r_b.index)
+    rm  = r_bm.reindex(idx).values
+    ra  = r_a.reindex(idx).values
+    rb  = r_b.reindex(idx).values
+    T   = len(rm)
+    ny  = T / 252.0
+    n_blocks = int(np.ceil(T / block_size))
+    rng = np.random.default_rng(seed)
+
+    cagr_bm = np.empty(n_iter);  mdd_bm = np.empty(n_iter)
+    cagr_a  = np.empty(n_iter);  mdd_a  = np.empty(n_iter)
+    cagr_b  = np.empty(n_iter);  mdd_b  = np.empty(n_iter)
+
+    def _metrics(r_mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """CAGR und Max-DD vektorisiert für (n, T)-Renditematrix."""
+        pv     = np.cumprod(1.0 + r_mat, axis=1)
+        cagr   = pv[:, -1] ** (1.0 / ny) - 1.0
+        cummax = np.maximum.accumulate(pv, axis=1)
+        mdd    = (pv / cummax - 1.0).min(axis=1)
+        return cagr, mdd
+
+    offset = 0
+    while offset < n_iter:
+        n       = min(chunk_size, n_iter - offset)
+        starts  = rng.integers(0, T, size=(n, n_blocks))
+        off_vec = np.arange(block_size, dtype=np.int32)
+        idx_mat = (starts[:, :, None] + off_vec[None, None, :]) % T
+        idx_mat = idx_mat.reshape(n, -1)[:, :T]
+
+        c_rm, m_rm = _metrics(rm[idx_mat])
+        c_ra, m_ra = _metrics(ra[idx_mat])
+        c_rb, m_rb = _metrics(rb[idx_mat])
+
+        sl = slice(offset, offset + n)
+        cagr_bm[sl] = c_rm;  mdd_bm[sl] = m_rm
+        cagr_a[sl]  = c_ra;  mdd_a[sl]  = m_ra
+        cagr_b[sl]  = c_rb;  mdd_b[sl]  = m_rb
+        offset += n
+
+    def _ci(arr):
+        return float(np.percentile(arr, 5)), float(np.percentile(arr, 95))
+
+    return {
+        "cagr_bm": cagr_bm,  "mdd_bm": mdd_bm,
+        "cagr_a":  cagr_a,   "mdd_a":  mdd_a,
+        "cagr_b":  cagr_b,   "mdd_b":  mdd_b,
+        "ci_cagr_bm": _ci(cagr_bm),  "ci_mdd_bm": _ci(mdd_bm),
+        "ci_cagr_a":  _ci(cagr_a),   "ci_mdd_a":  _ci(mdd_a),
+        "ci_cagr_b":  _ci(cagr_b),   "ci_mdd_b":  _ci(mdd_b),
+        "n_iter": n_iter,  "block_size": block_size,  "T": T,
+    }
+
+
+@st.cache_data(show_spinner="Berechne Block-Bootstrap (10 000 Pfade) …")
+def _block_bootstrap_cached(cache_key, _r_bm, _r_a, _r_b,
+                             n_iter=10_000, block_size=63):
+    """@st.cache_data-Wrapper: Neuberechnung nur bei Parameteränderung."""
+    return block_bootstrap(_r_bm, _r_a, _r_b, n_iter=n_iter, block_size=block_size)
+
+
+def plot_bootstrap_maxdd_mpl(bs: dict, save_path: str | None = None):
+    """Überlagerte KDE-Plots der Bootstrap-Max-Drawdown-Verteilungen (matplotlib).
+
+    Gestrichelte Linien markieren die 5%- / 95%-Konfidenzintervall-Grenzen.
+    Gibt eine matplotlib Figure zurück; speichert optional als PNG (save_path).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    entries = [
+        ("Benchmark",  bs["mdd_bm"] * 100,
+         (bs["ci_mdd_bm"][0] * 100, bs["ci_mdd_bm"][1] * 100), "#555555"),
+        ("Momentum",   bs["mdd_a"]  * 100,
+         (bs["ci_mdd_a"][0]  * 100, bs["ci_mdd_a"][1]  * 100), "#1f77b4"),
+        ("Contrarian", bs["mdd_b"]  * 100,
+         (bs["ci_mdd_b"][0]  * 100, bs["ci_mdd_b"][1]  * 100), "#d62728"),
+    ]
+
+    from scipy.stats import gaussian_kde as _gkde
+    for name, arr, (lo, hi), color in entries:
+        kde = _gkde(arr, bw_method="scott")
+        xs  = np.linspace(arr.min() - 0.5, arr.max() + 0.5, 600)
+        ys  = kde(xs)
+        ax.plot(xs, ys, color=color, lw=2, label=name)
+        ax.fill_between(xs, ys, alpha=0.12, color=color)
+        ax.axvline(lo, color=color, lw=1.2, ls="--", alpha=0.85)
+        ax.axvline(hi, color=color, lw=1.2, ls="--", alpha=0.85)
+
+    ax.set_xlabel("Max Drawdown (%)", fontsize=12)
+    ax.set_ylabel("Dichte", fontsize=12)
+    ax.set_title(
+        f"Bootstrap-Verteilung Max Drawdown  "
+        f"({bs['n_iter']:,} Iterationen · Blockgröße {bs['block_size']} HT)\n"
+        "Gestrichelt: 5%- / 95%-Konfidenzintervall",
+        fontsize=12,
+    )
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
 
 
 # =============================================================================
@@ -2597,6 +2915,20 @@ def main():
     kpi_row("Turnover p.a.",     m_bm["Turnover"]*100,      m_mom["Turnover"]*100,      m_con["Turnover"]*100,      fmt=".0f", suffix="%", higher_better=False)
     kpi_row("Kosten-Drag p.a.",  m_bm["Kosten-Drag"]*100,   m_mom["Kosten-Drag"]*100,   m_con["Kosten-Drag"]*100,   fmt=".2f", suffix="%", higher_better=False)
 
+    # Tägliche Renditen vorab berechnen (werden unten und im Export gebraucht)
+    r_bm_d  = p_bm["portfolio_value"].pct_change().dropna()
+    r_mom_d = p_mom["portfolio_value"].pct_change().dropna()
+    r_con_d = p_con["portfolio_value"].pct_change().dropna()
+
+    # Ledoit-Wolf HAC Sharpe-Test (O(T), < 1 s — immer ausführen)
+    sig = sharpe_significance_lw(r_mom_d, r_con_d, r_bm_d)
+
+    # Bootstrap Cache-Key und ggf. bereits gecachtes Ergebnis laden
+    _bs_cache_key = (f"bs_{mom_key}_{con_key}_{tc_bps}_"
+                     f"{band_bm}_{band_mom}_{band_con}_{bm_w1}")
+    _bs = (st.session_state.get("bs_result")
+           if st.session_state.get("bs_key") == _bs_cache_key else None)
+
     # ── EQUITY + DRAWDOWN ────────────────────────────────────────────────────
     st.markdown("---")
     ports = {"Benchmark": p_bm, "Momentum": p_mom, "Contrarian": p_con}
@@ -2622,6 +2954,79 @@ def main():
                         help="Höherer Wert → glattere Tails, weniger Rauschen")
     st.plotly_chart(chart_return_distribution(ports, bw_adjust=kde_bw),
                     use_container_width=True)
+
+    # ── STATISTISCHE SIGNIFIKANZ & ROBUSTHEIT ─────────────────────────────────
+    st.markdown("---")
+    st.subheader("Statistische Signifikanz & Robustheit")
+
+    st.markdown(
+        "**Sharpe-Ratio-Signifikanztest — H₀: SR(Strategie) = SR(Benchmark)**  \n"
+        "*Ledoit & Wolf (2008) · Delta-Methode · Newey-West HAC-Varianz*"
+    )
+    _sig_data = pd.DataFrame({
+        "SR Strat.":   [f"{sig['SR_Momentum']:.3f}",
+                        f"{sig['SR_Contrarian']:.3f}"],
+        "SR Bench.":   [f"{sig['SR_Benchmark']:.3f}",
+                        f"{sig['SR_Benchmark']:.3f}"],
+        "t-Statistik": [f"{sig['t_Mom_vs_BM']:+.3f}",
+                        f"{sig['t_Con_vs_BM']:+.3f}"],
+        "p-Wert":      [f"{sig['p_Mom_vs_BM']:.4f}",
+                        f"{sig['p_Con_vs_BM']:.4f}"],
+        "Sign. α=5%":  ["✓" if sig["p_Mom_vs_BM"] < 0.05 else "–",
+                        "✓" if sig["p_Con_vs_BM"] < 0.05 else "–"],
+        "Sign. α=10%": ["✓" if sig["p_Mom_vs_BM"] < 0.10 else "–",
+                        "✓" if sig["p_Con_vs_BM"] < 0.10 else "–"],
+    }, index=["Momentum vs. BM", "Contrarian vs. BM"])
+    st.dataframe(_sig_data, use_container_width=False)
+    st.caption(
+        f"Newey-West Lags: {sig['n_lags']}  ·  T = {sig['T']:,} Handelstage  ·  "
+        "zweiseitiger asymptotischer z-Test"
+    )
+
+    with st.expander(
+        "Bootstrap-Robustheit (Sequence of Returns Risk · 10 000 Iterationen · Block 63 HT)",
+        expanded=False,
+    ):
+        st.caption(
+            "Circular Block Bootstrap (Politis & Romano 1992): Blockgröße = 63 HT (≈ 1 Quartal).  "
+            "Erhält die zeitliche Autokorrelationsstruktur der Renditen.  "
+            "Konfidenzintervalle = empirische 5%- / 95%-Quantile aus 10 000 simulierten Pfaden."
+        )
+        if st.button("Bootstrap-Simulation starten (ca. 20–60 s)", key="btn_bootstrap"):
+            _bs_res = _block_bootstrap_cached(
+                _bs_cache_key, r_bm_d, r_mom_d, r_con_d,
+                n_iter=10_000, block_size=63,
+            )
+            st.session_state["bs_result"] = _bs_res
+            st.session_state["bs_key"]    = _bs_cache_key
+            _bs = _bs_res
+
+        if _bs is not None:
+            st.markdown("**5%- / 95%-Konfidenzintervalle aus Bootstrap**")
+            _ci_df = pd.DataFrame({
+                "CAGR  5%":  [f"{_bs['ci_cagr_bm'][0]*100:.2f} %",
+                               f"{_bs['ci_cagr_a'][0]*100:.2f} %",
+                               f"{_bs['ci_cagr_b'][0]*100:.2f} %"],
+                "CAGR 95%":  [f"{_bs['ci_cagr_bm'][1]*100:.2f} %",
+                               f"{_bs['ci_cagr_a'][1]*100:.2f} %",
+                               f"{_bs['ci_cagr_b'][1]*100:.2f} %"],
+                "MaxDD  5%": [f"{_bs['ci_mdd_bm'][0]*100:.1f} %",
+                               f"{_bs['ci_mdd_a'][0]*100:.1f} %",
+                               f"{_bs['ci_mdd_b'][0]*100:.1f} %"],
+                "MaxDD 95%": [f"{_bs['ci_mdd_bm'][1]*100:.1f} %",
+                               f"{_bs['ci_mdd_a'][1]*100:.1f} %",
+                               f"{_bs['ci_mdd_b'][1]*100:.1f} %"],
+            }, index=["Benchmark", "Momentum", "Contrarian"])
+            st.dataframe(_ci_df, use_container_width=False)
+
+            import os as _os
+            _png_path = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)),
+                "bootstrap_maxdd.png",
+            )
+            _fig_bs = plot_bootstrap_maxdd_mpl(_bs, save_path=_png_path)
+            st.pyplot(_fig_bs)
+            st.caption(f"Plot gespeichert: {_png_path}")
 
     # ── ALLOKATION ────────────────────────────────────────────────────────────
     with st.expander("Allokationshistorie", expanded=False):
@@ -2798,12 +3203,27 @@ def main():
         }
 
         # ── Markdown-Bericht generieren ───────────────────────────────────────
+        # Statistik-Dict für Markdown-Export zusammenstellen
+        _stats_export = {**sig}
+        if _bs is not None:
+            _stats_export.update({
+                "ci_cagr_bm": _bs["ci_cagr_bm"],
+                "ci_cagr_a":  _bs["ci_cagr_a"],
+                "ci_cagr_b":  _bs["ci_cagr_b"],
+                "ci_mdd_bm":  _bs["ci_mdd_bm"],
+                "ci_mdd_a":   _bs["ci_mdd_a"],
+                "ci_mdd_b":   _bs["ci_mdd_b"],
+                "bs_n_iter":  _bs["n_iter"],
+                "bs_block":   _bs["block_size"],
+            })
+
         report_text = analyzer.to_markdown(
             params=params,
             filter_s=filter_s,
             crash_thr=crash_thr,
             sensitivity_dfs=sensitivity_dfs,
             monthly_df=mdf,
+            stats_dict=_stats_export,
         )
 
         st.text_area(
