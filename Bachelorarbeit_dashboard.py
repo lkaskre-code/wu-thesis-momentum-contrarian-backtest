@@ -1,7 +1,7 @@
 # =============================================================================
 #  INTERAKTIVES BACKTESTING-DASHBOARD
 #  Momentum vs. Contrarian · SPY + GLD · 2005–2025
-#  Bachelorarbeit · Lukas Kaska
+#  Bachelorarbeit · Lukas Kressl
 #
 #  Starten:  streamlit run Bachelorarbeit_dashboard.py
 # =============================================================================
