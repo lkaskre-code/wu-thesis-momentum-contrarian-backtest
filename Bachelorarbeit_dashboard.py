@@ -3,7 +3,7 @@
 #  Momentum vs. Contrarian · SPY + GLD · 2005–2025
 #  Bachelorarbeit · Lukas Kressl
 #
-#  Starten:  streamlit run Bachelorarbeit_dashboard.py
+#  Starten:  python -m streamlit run Bachelorarbeit_dashboard.py
 # =============================================================================
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
@@ -2700,7 +2700,7 @@ def main():
     # ── KI-ANALYSE EXPORT ─────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("Analyse Export")
-    st.caption("Alle Backtestdaten als strukturierter Text")
+    st.caption("Alle Backtestdaten als strukturierter Text — direkt in Claude / ChatGPT einfügen")
 
     if st.button("Bericht generieren", type="primary"):
 
